@@ -1,77 +1,78 @@
-"""1. Define the tools our agent can use"""
-import os
-from langchain import hub
-from langchain.agents import create_openai_functions_agent
-from langchain_openai.chat_models import ChatOpenAI
-from langchain_community.utilities.polygon import PolygonAPIWrapper
-from langchain_community.tools import PolygonLastQuote, PolygonTickerNews, PolygonFinancials, PolygonAggregates
-import gradio as gr
+import alpaca_trade_api as tradeapi
+import yfinance as yf
+import time
 
-prompt = hub.pull("hwchase17/openai-functions-agent")
-llm = ChatOpenAI(model="gpt-4-0125-preview")
+# 1. Configure Alpaca API keys
+API_KEY = 'YOUR_ALPACA_API_KEY'
+SECRET_KEY = 'YOUR_ALPACA_SECRET_KEY'
+BASE_URL = 'https://paper-api.alpaca.markets'  # Using the paper trading environment
 
-polygon = PolygonAPIWrapper()
-tools = [
-    PolygonLastQuote(api_wrapper=polygon),
-    PolygonTickerNews(api_wrapper=polygon),
-    PolygonFinancials(api_wrapper=polygon),
-    PolygonAggregates(api_wrapper=polygon),
-]
+api = tradeapi.REST(API_KEY, SECRET_KEY, BASE_URL, api_version='v2')
 
-"""2. Define agent and helper functions"""
-from langchain_core.runnables import RunnablePassthrough
-from langchain_core.agents import AgentFinish
+# 2. Define a function to get the top 3 stocks to invest in
+def get_top_stocks():
+    # List of some popular symbols (you can expand this list)
+    symbols = ['AAPL', 'MSFT', 'AMZN', 'GOOGL', 'META', 'TSLA', 'JNJ', 'V', 'WMT', 'NVDA']
 
-# Define the agent
-agent_runnable = create_openai_functions_agent(llm, tools, prompt)
-agent = RunnablePassthrough.assign(
-    agent_outcome = agent_runnable
-)
+    volumes = {}
+    for symbol in symbols:
+        ticker = yf.Ticker(symbol)
+        data = ticker.history(period='1d')
+        if not data.empty:
+            volumes[symbol] = data['Volume'].iloc[-1]
+        else:
+            volumes[symbol] = 0  # Assign volume 0 if no data is available
 
-# Define the function to execute tools
-def execute_tools(data):
-    agent_action = data.pop('agent_outcome')
-    tool_to_use = {t.name: t for t in tools}[agent_action.tool]
-    observation = tool_to_use.invoke(agent_action.tool_input)
-    data['intermediate_steps'].append((agent_action, observation))
-    return data
+    # Sort by volume and get the top 3
+    selected_stocks = sorted(volumes, key=volumes.get, reverse=True)[:3]
+    return selected_stocks
 
-"""3. Define the LangGraph"""
-from langgraph.graph import END, Graph
+# 3. Get the stocks and calculate how much to invest in each
+total_capital = 50.0  # Total capital available in USD
+stocks = get_top_stocks()
+capital_per_stock = total_capital / len(stocks)
 
-# Define logic that will be used to determine which conditional edge to go down
-def should_continue(data):
-    if isinstance(data['agent_outcome'], AgentFinish):
-        return "exit"
+print(f"Selected stocks: {stocks}")
+print(f"Capital per stock: {capital_per_stock} USD")
+
+# 4. Place buy orders
+for symbol in stocks:
+    # Get the current price of the stock
+    ticker = yf.Ticker(symbol)
+    data = ticker.history(period='1d')
+    if not data.empty:
+        current_price = data['Close'].iloc[-1]
+        # Calculate the number of shares to buy
+        quantity = int(capital_per_stock / current_price)
+        if quantity > 0:
+            try:
+                order = api.submit_order(
+                    symbol=symbol,
+                    qty=quantity,
+                    side='buy',
+                    type='market',
+                    time_in_force='gtc'
+                )
+                print(f"Placed buy order for {quantity} shares of {symbol} at {current_price:.2f} USD per share.")
+            except Exception as e:
+                print(f"Error placing order for {symbol}: {e}")
+        else:
+            print(f"Not enough capital to buy shares of {symbol} at {current_price:.2f} USD.")
     else:
-        return "continue"
+        print(f"Could not retrieve data for {symbol}.")
 
-workflow = Graph()
-workflow.add_node("agent", agent)
-workflow.add_node("tools", execute_tools)
-workflow.set_entry_point("agent")
-workflow.add_conditional_edges(
-    "agent",
-    should_continue,
-    {
-        "continue": "tools",
-        "exit": END
-    }
-)
-workflow.add_edge('tools', 'agent')
-chain = workflow.compile()
-
-def financial_agent(input_text):
-    result = chain.invoke({"input": input_text, "intermediate_steps": []})
-    output = result['agent_outcome'].return_values["output"]
-    return output
-
-iface = gr.Interface(
-    fn=financial_agent,
-    inputs=gr.Textbox(lines=2, placeholder="Enter your query here..."),
-    outputs=gr.Markdown(),
-    title="Financial Agent",
-    description="Financial Data Explorer: Leveraging Advanced API Tools for Market Insights"
-)
-
-iface.launch()
+# 5. Monitor the stock prices
+try:
+    while True:
+        print("\nMonitoring prices...")
+        for symbol in stocks:
+            ticker = yf.Ticker(symbol)
+            data = ticker.history(period='1d')
+            if not data.empty:
+                current_price = data['Close'].iloc[-1]
+                print(f"The current price of {symbol} is {current_price:.2f} USD.")
+            else:
+                print(f"Could not retrieve data for {symbol}.")
+        time.sleep(60)  # Wait 60 seconds before the next check
+except KeyboardInterrupt:
+    print("\nMonitoring stopped by user.")
