@@ -1,14 +1,3 @@
-Sure! Here's the updated code with all variable names in English, followed by an estimation of potential weekly returns in the best and worst-case scenarios.
-
-
----
-
-Updated Python Code with English Variable Names:
-
-import alpaca_trade_api as tradeapi
-import yfinance as yf
-import time
-
 # 1. Configure Alpaca API keys
 API_KEY = 'YOUR_ALPACA_API_KEY'
 SECRET_KEY = 'YOUR_ALPACA_SECRET_KEY'
